@@ -36,47 +36,50 @@ Mi proyecto va a contener:
 
 
 
-import discord
+
+
+  Proyecto Final:
+
+  import discord
 from discord.ext import commands
 import os
 import tensorflow as tf
 from PIL import Image, ImageOps
 import numpy as np
-import requests
 from io import BytesIO
 from dotenv import load_dotenv
+import aiohttp 
 
 load_dotenv()
-
-DISCORD_BOT_TOKEN = os.getenv('TOKEN')
+DISCORD_BOT_TOKEN = ('TOKENsiño Boniño') 
 
 
 COMMAND_PREFIX = '!'
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-
+intents.message_content = True # 
+intents.members = True 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
+bot.last_prediction_data = {}
 
 MODEL_PATHS = {
     'eco_bosque': {
-        'path': 'modelseco_bosque_model.h5',
-        'labels': 'modelseco_bosque_labels.txt',
+        'path': 'models/eco_bosque_model.h5', 
+        'labels': 'models/eco_bosque_labels.txt', 
         'model': None,
         'labels_list': [],
         'good_class_name': 'Bosques limpios'
     },
     'eco_ciudad': {
-        'path': 'modelseco_ciudad_model.h5',
-        'labels': 'modelseco_ciudad_labels.txt',
+        'path': 'models/eco_ciudad_model.h5', 
+        'labels': 'models/eco_ciudad_labels.txt', 
         'model': None,
         'labels_list': [],
         'good_class_name': 'Ciudades Limpias'
     },
     'glaciares': {
-        'path': 'modelsglaciares_model.h5',
-        'labels': 'modelsglaciares_labels.txt',
+        'path': 'models/glaciares_model.h5', 
+        'labels': 'models/glaciares_labels.txt', 
         'model': None,
         'labels_list': [],
         'good_class_name': 'Glaciares normales'
@@ -84,7 +87,6 @@ MODEL_PATHS = {
 }
 
 IMAGE_INPUT_SIZE = (224, 224)
-
 
 MESSAGES = {
     'eco_bosque': {
@@ -108,218 +110,179 @@ MESSAGES = {
 }
 
 
-async def load_tm_model(model_name):
-    """Carga un modelo de Teachable Machine y sus etiquetas."""
+def load_tm_model(model_name):
     try:
-        print(f"Cargando modelo '{model_name}' desde {MODEL_PATHS[model_name]['path']}...")
+        print(f"Cargando modelo '{model_name}'...")
+        
         MODEL_PATHS[model_name]['model'] = tf.keras.models.load_model(MODEL_PATHS[model_name]['path'], compile=False)
-
-        print(f"Cargando etiquetas para '{model_name}' desde {MODEL_PATHS[model_name]['labels']}...")
         with open(MODEL_PATHS[model_name]['labels'], 'r', encoding='utf-8') as f:
             MODEL_PATHS[model_name]['labels_list'] = [line.strip() for line in f]
-
-        print(f"Modelo '{model_name}' y etiquetas cargados exitosamente.")
+        print(f"Modelo '{model_name}' cargado correctamente.")
         return True
     except Exception as e:
-        print(f"Error al cargar el modelo '{model_name}': {e}")
+        print(f"Error cargando modelo '{model_name}': {e}")
         return False
 
-async def preprocess_image(image_bytes):
-    """Preprocesa la imagen para que sea compatible con los modelos de TM."""
+
+def preprocess_image(image_bytes):
     try:
         image = Image.open(BytesIO(image_bytes)).convert('RGB')
+      
         image = ImageOps.fit(image, IMAGE_INPUT_SIZE, Image.Resampling.LANCZOS)
         image_array = np.asarray(image)
         normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1
         return np.expand_dims(normalized_image_array, axis=0)
     except Exception as e:
-        print(f"Error en el preprocesamiento de la imagen: {e}")
+        print(f"Error en preprocesamiento: {e}")
         return None
-
-async def _send_details_and_advice(ctx, model_name_key, all_probabilities, good_class_name):
-    """Envía al usuario los porcentajes de todas las clases y el consejo de mejora."""
-    detail_message = f"Aquí tienes los porcentajes de todas las clases para tu imagen con el modelo **{model_name_key.replace('_', ' ').title()}**:\n"
-    for label, prob in sorted(all_probabilities.items(), key=lambda item: item[1], reverse=True):
-        detail_message += f"**{label}: {prob:.2f}%**\n"
-
-    await ctx.send(detail_message)
-
-    good_class_percentage = all_probabilities.get(good_class_name, 0.0)
-
-    advice_message = get_improvement_message(model_name_key, good_class_percentage)
-    await ctx.send(f"\n**Consejo para mejorar tu '{good_class_name}':**\n{advice_message}")
-
-
-async def predict_with_model(ctx, model_info, image_url):
-    """Descarga la imagen, la procesa y hace una predicción con el modelo dado."""
-    model = model_info['model']
-    labels = model_info['labels_list']
-    model_name_key = next(key for key, value in MODEL_PATHS.items() if value == model_info)
-    model_display_name = model_info['path'].split('/')[-1].replace('_model.h5', '').replace('_folder', '')
-
-    if not model:
-        await ctx.send(f"El modelo '{model_display_name}' no está cargado o hubo un error. Por favor, inténtalo más tarde.")
-        return
-
-    try:
-        await ctx.send(f"Procesando imagen con el modelo '{model_display_name}'...")
-        response = requests.get(image_url)
-        image_data = await preprocess_image(response.content)
-
-        if image_data is None:
-            await ctx.send("No pude procesar la imagen adjunta. Asegúrate de que sea una imagen válida.")
-            return
-
-        prediction = model.predict(image_data)
-        
-        all_probabilities = {}
-        for i, prob in enumerate(prediction[0]):
-            label = labels[i]
-            clean_label = label[2:] if label[0].isdigit() and label[1] == ' ' else label
-            all_probabilities[clean_label] = prob * 100
-
-        predicted_class_index = np.argmax(prediction[0])
-        predicted_probability = prediction[0][predicted_class_index]
-
-        reply_message = f"Resultados del modelo **{model_display_name}** para tu imagen:\n"
-        if predicted_class_index < len(labels):
-            predicted_label = labels[predicted_class_index]
-            clean_label = predicted_label[2:] if predicted_label[0].isdigit() and predicted_label[1] == ' ' else predicted_label
-            reply_message += f"**{clean_label}: {(predicted_probability * 100):.2f}%**\n"
-        else:
-            reply_message += f"Clase desconocida {predicted_class_index}: {(predicted_probability * 100):.2f}%\n"
-        
-        reply_message += f"\nSi deseas ver los porcentajes de todas las clases y obtener consejos para mejorar tu '{model_info['good_class_name']}', usa el comando `{COMMAND_PREFIX}detalles`."
-        
-        await ctx.send(reply_message)
-        
-        bot.last_prediction_data[ctx.author.id] = { 
-            'channel_id': ctx.channel.id, 
-            'model_name_key': model_name_key,
-            'all_probabilities': all_probabilities,
-            'good_class_name': model_info['good_class_name']
-        }
-
-    except Exception as e:
-        print(f"Error en la predicción con el modelo {model_display_name}: {e}")
-        await ctx.send(f"Hubo un error al intentar la predicción con el modelo {model_display_name}. Detalles: {e}")
 
 def get_improvement_message(model_name_key, percentage):
     messages_for_model = MESSAGES.get(model_name_key, {})
-
     if percentage >= 76:
         return messages_for_model.get('76-100', "¡Excelente trabajo!")
     elif percentage >= 51:
         return messages_for_model.get('51-75', "¡Vas muy bien, sigue así!")
     elif percentage >= 26:
         return messages_for_model.get('26-50', "Podemos mejorar, ¡ánimo!")
-    else: 
+    else:
         return messages_for_model.get('0-25', "No te rindas, ¡hay mucho por aprender!")
 
-# --- Eventos del Bot ---
+async def _send_details_and_advice(ctx, model_name_key, all_probabilities, good_class_name):
+    detail_message = f"**Porcentajes de todas las clases:**\n"
+    
+    if good_class_name:
+        
+        sorted_probabilities = sorted(all_probabilities.items(), key=lambda item: item[1] if item[0] != good_class_name else float('inf'), reverse=True)
+    else:
+        sorted_probabilities = sorted(all_probabilities.items(), key=lambda item: item[1], reverse=True)
+
+    for label, prob in sorted_probabilities:
+        detail_message += f"{label}: {prob:.2f}%\n"
+    await ctx.send(detail_message)
+
+    good_class_percentage = all_probabilities.get(good_class_name, 0.0) if good_class_name else 0.0
+    advice_message = get_improvement_message(model_name_key, good_class_percentage)
+    await ctx.send(f"**Consejo:** {advice_message}")
+
+async def predict_with_model(ctx, model_name_key, image_url):
+    model_info = MODEL_PATHS[model_name_key]
+    model = model_info['model']
+    labels = model_info['labels_list']
+
+    if not model:
+        await ctx.send("El modelo no está cargado. Inténtalo más tarde.")
+        return
+    await ctx.send("Procesando imagen...")
+
+    try:
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as resp:
+                if resp.status != 200:
+                    await ctx.send("No se pudo descargar la imagen.")
+                    return
+                image_bytes = await resp.read()
+
+        image_data = preprocess_image(image_bytes) 
+        if image_data is None:
+            await ctx.send("No pude procesar la imagen.")
+            return
+
+        prediction = model.predict(image_data)
+        all_probabilities = {}
+        for i, prob in enumerate(prediction[0]):
+            label = labels[i]
+            
+            clean_label = label[2:] if label[0].isdigit() and label[1] == ' ' else label
+            all_probabilities[clean_label] = prob * 100
+
+        predicted_class_index = np.argmax(prediction[0])
+        predicted_probability = prediction[0][predicted_class_index]
+        predicted_label = labels[predicted_class_index]
+        
+        clean_label = predicted_label[2:] if predicted_label[0].isdigit() and predicted_label[1] == ' ' else predicted_label
+
+        await ctx.send(f"**{clean_label}: {predicted_probability * 100:.2f}%**\nUsa `{COMMAND_PREFIX}detalles` para más información.")
+
+        
+        bot.last_prediction_data[ctx.author.id] = {
+            'channel_id': ctx.channel.id,
+            'model_name_key': model_name_key, 
+            'all_probabilities': all_probabilities,
+            'good_class_name': model_info['good_class_name']
+        }
+    except Exception as e:
+        await ctx.send(f"Ocurrió un error al procesar la imagen: {e}")
+
 @bot.event
 async def on_ready():
-    """Se ejecuta cuando el bot se conecta a Discord."""
-    print(f'{bot.user} se ha conectado a Discord!')
-    print("Cargando todos los modelos Teachable Machine...")
-
-    success_all = True
+    print(f'{bot.user} está en línea.')
     for model_key in MODEL_PATHS:
-        success = await load_tm_model(model_key)
+        
+        success = load_tm_model(model_key)
         if not success:
-            print(f"Advertencia: El modelo '{model_key}' no pudo cargarse.")
-            success_all = False
+            print(f"Advertencia: El modelo '{model_key}' no se pudo cargar. Los comandos relacionados no funcionarán.")
 
-    if success_all:
-        print("Todos los modelos cargados exitosamente.")
-    else:
-        print("Carga de algunos modelos falló. Revisa los logs.")
-    
-    bot.last_prediction_data = {}
-
-
-# --- Comandos del Bot ---
-
-
-@bot.command(name='ayuda') 
-async def custom_help_command(ctx):
-    """Muestra una guía completa de cómo usar el bot."""
-    help_message = (
-        f"¡Hola {ctx.author.display_name}! Soy tu bot ambiental. ¡Estoy aquí para ayudarte a analizar imágenes y aprender sobre el medio ambiente!\n\n"
-        f"Usa el prefijo `{COMMAND_PREFIX}` antes de cada comando.\n\n"
-        "**Comandos para analizar imágenes:**\n"
-        f"• `{COMMAND_PREFIX}ecobosque`: Envía una imagen de un bosque. Yo la analizaré para ver su estado.\n"
-        f"• `{COMMAND_PREFIX}ecociudad`: Envía una imagen de una ciudad. Yo la revisaré para evaluar su limpieza.\n"
-        f"• `{COMMAND_PREFIX}glaciares`: Envía una imagen de un glaciar. Yo la examinaré para determinar su condición.\n"
-        "*(Recuerda adjuntar la imagen al usar estos comandos)*\n\n"
-        "**Comando para detalles y consejos:**\n"
-        f"• `{COMMAND_PREFIX}detalles`: Después de que analice tu imagen con cualquiera de los comandos anteriores, puedes usar este comando para ver un desglose completo de los porcentajes de cada categoría y recibir consejos personalizados sobre cómo mejorar tus resultados."
+@bot.command(name='ayuda')
+async def ayuda(ctx):
+    await ctx.send(
+        "**Comandos disponibles:**\n"
+        f"**`{COMMAND_PREFIX}ecobosque`** - Analiza una imagen de bosque\n"
+        f"**`{COMMAND_PREFIX}ecociudad`** - Analiza una imagen de ciudad\n"
+        f"**`{COMMAND_PREFIX}glaciares`** - Analiza una imagen de glaciar\n"
+        f"**`{COMMAND_PREFIX}detalles`** - Ver detalles de tu última predicción\n"
+        "*(Para usar un comando, adjunta una imagen a tu mensaje y escribe el comando. Ejemplo: `!ecobosque [imagen_adjunta]`)*"
     )
-    await ctx.send(help_message)
-
-@bot.command(name='help_tm')
-async def help_command_tm(ctx):
-    """Alias para el comando de ayuda principal."""
-    await custom_help_command(ctx) 
-
 
 @bot.command(name='ecobosque')
-async def ecobosque_command(ctx):
-    """Analiza una imagen con el modelo Eco_Bosque."""
+async def ecobosque(ctx):
     if not ctx.message.attachments:
-        await ctx.send(f"Por favor, adjunta una imagen con el comando `{COMMAND_PREFIX}ecobosque`.")
+        await ctx.send("Adjunta una imagen con este comando, por favor.")
         return
-
     for attachment in ctx.message.attachments:
-        if attachment.content_type and attachment.content_type.startswith('image/'):
-            await predict_with_model(ctx, MODEL_PATHS['eco_bosque'], attachment.url)
+        if attachment.content_type and attachment.content_type.startswith('image/'): # Mejorado: verificar que content_type no sea None
+            await predict_with_model(ctx, 'eco_bosque', attachment.url)
         else:
-            await ctx.send(f"Adjunta un archivo de imagen válido para usar el comando `{COMMAND_PREFIX}ecobosque`.")
+            await ctx.send("El archivo adjunto no es una imagen válida.")
 
 @bot.command(name='ecociudad')
-async def ecociudad_command(ctx):
-    """Analiza una imagen con el modelo Eco_Ciudad."""
+async def ecociudad(ctx):
     if not ctx.message.attachments:
-        await ctx.send(f"Por favor, adjunta una imagen con el comando `{COMMAND_PREFIX}ecociudad`.")
+        await ctx.send("Adjunta una imagen con este comando, por favor.")
         return
-
     for attachment in ctx.message.attachments:
         if attachment.content_type and attachment.content_type.startswith('image/'):
-            await predict_with_model(ctx, MODEL_PATHS['eco_ciudad'], attachment.url)
+            await predict_with_model(ctx, 'eco_ciudad', attachment.url)
         else:
-            await ctx.send(f"Adjunta un archivo de imagen válido para usar el comando `{COMMAND_PREFIX}ecociudad`.")
+            await ctx.send("El archivo adjunto no es una imagen válida.")
 
 @bot.command(name='glaciares')
-async def glaciares_command(ctx):
-    """Analiza una imagen con el modelo Glaciares."""
+async def glaciares(ctx):
     if not ctx.message.attachments:
-        await ctx.send(f"Por favor, adjunta una imagen con el comando `{COMMAND_PREFIX}glaciares`.")
+        await ctx.send("Adjunta una imagen con este comando, por favor.")
         return
-
     for attachment in ctx.message.attachments:
         if attachment.content_type and attachment.content_type.startswith('image/'):
-            await predict_with_model(ctx, MODEL_PATHS['glaciares'], attachment.url)
+            await predict_with_model(ctx, 'glaciares', attachment.url)
         else:
-            await ctx.send(f"Adjunta un archivo de imagen válido para usar el comando `{COMMAND_PREFIX}glaciares`.")
-
+            await ctx.send("El archivo adjunto no es una imagen válida.")
 
 @bot.command(name='detalles')
-async def show_details_and_advice(ctx):
-    """Muestra los porcentajes de la última imagen analizada y consejos de mejora."""
-    if ctx.author.id not in bot.last_prediction_data:
-        await ctx.send("No hay una predicción reciente para mostrar detalles. Primero, usa uno de los comandos de análisis de imagen (ej. `!ecobosque` con una imagen).")
+async def detalles(ctx):
+    data = bot.last_prediction_data.get(ctx.author.id)
+    if not data:
+        await ctx.send("No tienes una predicción reciente en este canal. Primero usa un comando como `!ecobosque` con una imagen.")
         return
-    
-    data = bot.last_prediction_data[ctx.author.id]
-    
+
     if data['channel_id'] != ctx.channel.id:
-        await ctx.send("Este comando muestra detalles de tu última predicción, pero parece que estás en un canal diferente. Por favor, usa `!detalles` en el mismo canal donde hiciste la predicción.")
+        await ctx.send("Usa este comando en el **mismo canal** donde hiciste la última predicción.")
         return
 
     await _send_details_and_advice(ctx, data['model_name_key'], data['all_probabilities'], data['good_class_name'])
-    
+    del bot.last_prediction_data[ctx.author.id] 
 
-    del bot.last_prediction_data[ctx.author.id]
-
-
-bot.run(DISCORD_BOT_TOKEN)
+if __name__ == "__main__":
+    if DISCORD_BOT_TOKEN:
+        bot.run(DISCORD_BOT_TOKEN)
+else:
+    print("❌ ERROR: No has colocado tu token de Discord en el archivo.")
